@@ -1,0 +1,99 @@
+---
+- name: Configure EC2 Web Server with Apache HTTPD
+  hosts: ec2
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Update system packages
+      ansible.builtin.yum:
+        name: '*'
+        state: latest
+        update_cache: true
+      register: update_result
+
+    - name: Display update result
+      ansible.builtin.debug:
+        msg: "System packages updated successfully"
+      when: update_result.changed
+
+    - name: Check if nginx is installed
+      ansible.builtin.command: which nginx
+      register: nginx_check
+      failed_when: false
+      changed_when: false
+
+    - name: Stop nginx service if running
+      ansible.builtin.systemd:
+        name: nginx
+        state: stopped
+        enabled: false
+      when: nginx_check.rc == 0
+      ignore_errors: true
+
+    - name: Uninstall nginx to free port 80
+      ansible.builtin.yum:
+        name: nginx
+        state: absent
+      when: nginx_check.rc == 0
+
+    - name: Install Apache HTTPD
+      ansible.builtin.yum:
+        name: httpd
+        state: present
+
+    - name: Start and enable httpd service
+      ansible.builtin.systemd:
+        name: httpd
+        state: started
+        enabled: true
+
+    - name: Get IMDSv2 token
+      ansible.builtin.uri:
+        url: http://169.254.169.254/latest/api/token
+        method: PUT
+        headers:
+          X-aws-ec2-metadata-token-ttl-seconds: "21600"
+        return_content: true
+      register: imds_token
+      delegate_to: "{{ inventory_hostname }}"
+
+    - name: Fetch public IPv4 using IMDSv2
+      ansible.builtin.uri:
+        url: http://169.254.169.254/latest/meta-data/public-ipv4
+        method: GET
+        headers:
+          X-aws-ec2-metadata-token: "{{ imds_token.content }}"
+        return_content: true
+      register: public_ipv4
+      delegate_to: "{{ inventory_hostname }}"
+
+    - name: Fetch public hostname using IMDSv2
+      ansible.builtin.uri:
+        url: http://169.254.169.254/latest/meta-data/public-hostname
+        method: GET
+        headers:
+          X-aws-ec2-metadata-token: "{{ imds_token.content }}"
+        return_content: true
+      register: public_hostname
+      delegate_to: "{{ inventory_hostname }}"
+
+    - name: Print public IP address
+      ansible.builtin.debug:
+        msg: 
+          - "Public IP: {{ public_ipv4.content }}"
+          - "Public Hostname: {{ public_hostname.content }}"
+
+    - name: Restart httpd service
+      ansible.builtin.systemd:
+        name: httpd
+        state: restarted
+
+    - name: Verify httpd is running
+      ansible.builtin.systemd:
+        name: httpd
+      register: httpd_status
+
+    - name: Display httpd status
+      ansible.builtin.debug:
+        msg: "Apache HTTPD is {{ httpd_status.status.ActiveState }}"
